@@ -13,7 +13,6 @@ import (
 
 type signer struct {
 	key      libtrust.PrivateKey
-	keyID    string
 	cert     *x509.Certificate
 	rawCerts [][]byte
 	hash     crypto.Hash
@@ -25,10 +24,6 @@ func NewSignerFromFiles(keyPath, certPath string) (signature.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if certPath == "" {
-		return NewSigner(key, nil)
-	}
-
 	certs, err := cryptoutil.ReadCertificateFile(certPath)
 	if err != nil {
 		return nil, err
@@ -38,13 +33,8 @@ func NewSignerFromFiles(keyPath, certPath string) (signature.Signer, error) {
 
 // NewSigner creates a signer
 func NewSigner(key libtrust.PrivateKey, certs []*x509.Certificate) (signature.Signer, error) {
-	s := &signer{
-		key:   key,
-		keyID: key.KeyID(),
-		hash:  crypto.SHA256,
-	}
 	if len(certs) == 0 {
-		return s, nil
+		return nil, errors.New("missing certificates")
 	}
 
 	cert := certs[0]
@@ -52,41 +42,35 @@ func NewSigner(key libtrust.PrivateKey, certs []*x509.Certificate) (signature.Si
 	if err != nil {
 		return nil, err
 	}
-	if s.keyID != publicKey.KeyID() {
+	if key.KeyID() != publicKey.KeyID() {
 		return nil, errors.New("key and certificate mismatch")
 	}
-	s.cert = cert
 
 	rawCerts := make([][]byte, 0, len(certs))
 	for _, cert := range certs {
 		rawCerts = append(rawCerts, cert.Raw)
 	}
-	s.rawCerts = rawCerts
 
-	return s, nil
+	return &signer{
+		key:      key,
+		cert:     cert,
+		rawCerts: rawCerts,
+		hash:     crypto.SHA256,
+	}, nil
 }
 
 func (s *signer) Sign(raw []byte) (signature.Signature, error) {
-	if s.cert != nil {
-		if err := verifyReferences(raw, s.cert); err != nil {
-			return signature.Signature{}, err
-		}
+	if err := verifyReferences(raw, s.cert); err != nil {
+		return signature.Signature{}, err
 	}
-
 	sig, alg, err := s.key.Sign(bytes.NewReader(raw), s.hash)
 	if err != nil {
 		return signature.Signature{}, err
 	}
-	sigma := signature.Signature{
+	return signature.Signature{
 		Type:      Type,
 		Algorithm: alg,
+		X5c:       s.rawCerts,
 		Signature: sig,
-	}
-
-	if s.cert != nil {
-		sigma.X5c = s.rawCerts
-	} else {
-		sigma.KeyID = s.keyID
-	}
-	return sigma, nil
+	}, nil
 }
